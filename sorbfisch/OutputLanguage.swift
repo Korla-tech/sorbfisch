@@ -8,11 +8,11 @@ nonisolated enum OutputLanguage: String, CaseIterable, Identifiable {
         self == .german ? "DE · Deutsche Übersetzung" : "HSB · Obersorbisches Diktat"
     }
     var outputTitle: String {
-        self == .german ? "Deutsche Übersetzung" : "Obersorbisches Diktat"
+        "Testtranskript"
     }
     var modelResource: String {
-        self == .german
-            ? "whisper-large-v2-hsb-translate_1099MB"
-            : "whisper-large-v3-turbo-hsb-v1_633MB"
+        // Intentional test-branch override for both output routes. Multilingual
+        // Tiny is for memory/performance testing, not custom HSB/DE accuracy.
+        "openai_whisper-tiny"
     }
 }

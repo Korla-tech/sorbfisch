@@ -3,7 +3,9 @@ import Foundation
 /// Persistent downloads, outside the purgeable caches directory. A completion
 /// marker prevents incomplete downloads from being mistaken for offline models.
 nonisolated struct RemoteModelCache {
-    static let repository = "Korla/whisperkit-model-hsb"
+    // This test branch always downloads the small, standard WhisperKit model.
+    // The repository namespace keeps it separate from the custom model cache.
+    static let repository = "argmaxinc/whisperkit-coreml"
     let root: URL
 
     static func applicationCache() throws -> RemoteModelCache {

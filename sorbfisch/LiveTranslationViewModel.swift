@@ -79,14 +79,14 @@ final class LiveTranslationViewModel: ObservableObject {
                 : "Das Sprachmodell wird geladen …"
         }
         if isRecording {
-            return "Sprich jetzt auf Obersorbisch"
+            return "Sprich jetzt (Whisper-Tiny-Testmodell)"
         }
         return "Tippe auf das Mikrofon und beginne zu sprechen."
     }
 
     var statusMessage: String {
         if isRecording {
-            return outputLanguage == .german ? "Hört zu und übersetzt …" : "Hört zu und schreibt mit …"
+            return "Hört zu und transkribiert (Testmodell) …"
         }
         if modelState == .unloading { return "Modell wird entladen …" }
         if modelState == .loading {
@@ -96,7 +96,7 @@ final class LiveTranslationViewModel: ObservableObject {
         if modelState == .failed { return "Modell nicht verfügbar" }
         if modelState == .idle { return "Modell noch nicht geladen" }
         if translatedText.isEmpty { return "Bereit" }
-        return outputLanguage == .german ? "Übersetzung abgeschlossen" : "Diktat abgeschlossen"
+        return "Testtranskript abgeschlossen"
     }
 
     var statusSymbol: String {
@@ -159,18 +159,8 @@ final class LiveTranslationViewModel: ObservableObject {
             let localVAD: SileroChunkVAD
             if let vad { localVAD = vad }
             else { localVAD = try await SileroChunkVAD.bundled() }
-            guard let tokenizerURL = Bundle.main.url(
-                forResource: "tokenizer",
-                withExtension: nil
-            ) else {
-                throw LiveTranslationError.tokenizerUnavailable
-            }
-            let actualTokenizerURL = tokenizerURL
-                .appendingPathComponent("models")
-                .appendingPathComponent("openai")
-                .appendingPathComponent("whisper-large-v3")
-
             let cache = try RemoteModelCache.applicationCache()
+            print("available memory: ", os_proc_available_memory())
             let variant = outputLanguage.modelResource
             let modelURL: URL
             if let cached = cache.completedModel(for: variant) {
@@ -203,7 +193,7 @@ final class LiveTranslationViewModel: ObservableObject {
     
             let config = WhisperKitConfig(
                 modelFolder: modelURL.path,
-                tokenizerFolder: actualTokenizerURL,
+                tokenizerFolder: cache.root,
                 verbose: true,
                 prewarm: false,
                 load: false,
@@ -220,14 +210,13 @@ final class LiveTranslationViewModel: ObservableObject {
                 throw LiveTranslationError.tokenizerUnavailable
             }
 
-            // Both fine-tuned routes use transcribe; translation is learned by
-            // the translation model. Keep the existing custom-model token setup.
             let options = DecodingOptions(
                 verbose: false,
                 task: .transcribe,
-                language: "cs",
+                language: nil,
                 temperature: 0,
-                usePrefillPrompt: false,
+                usePrefillPrompt: true,
+                detectLanguage: true,
                 skipSpecialTokens: true,
                 wordTimestamps: false,
             )

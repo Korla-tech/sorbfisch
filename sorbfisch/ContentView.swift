@@ -28,6 +28,10 @@ struct ContentView: View {
                 ScrollView {
                     VStack(spacing: 20) {
                         languageRoute
+                        Text("Testmodell: Whisper Tiny · Keine benutzerdefinierte Obersorbisch-Erkennung oder Deutsch-Übersetzung.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
                         translationCard
                         recordingControls
                         privacyNote
