@@ -352,6 +352,12 @@ struct ContentView: View {
                     Text("Herzlichen Dank an Bernhard Baier für die Namensidee und das Logo von Sorbfisch.")
                         .padding(.vertical, 4)
                 }
+
+                Section("Entwicklung") {
+                    Text("Die App wurde im Auftrag der Stiftung für das sorbische Volk von Karl Baier entwickelt.")
+                        .padding(.vertical, 4)
+                }
+
             }
             .navigationTitle("Über Sorbfisch")
             .navigationBarTitleDisplayMode(.inline)
