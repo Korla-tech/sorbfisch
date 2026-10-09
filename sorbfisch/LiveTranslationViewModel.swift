@@ -20,6 +20,7 @@ final class LiveTranslationViewModel: ObservableObject {
     @Published private(set) var isPrewarming = false
     @Published private(set) var isDownloading = false
     @Published private(set) var downloadProgress: Double = 0
+    @Published private(set) var isClearingModelStorage = false
     @Published private(set) var isRecording = false
     @Published private(set) var translatedText = ""
     @Published private(set) var confidence: Double?
@@ -47,13 +48,33 @@ final class LiveTranslationViewModel: ObservableObject {
     private var downloadID: UUID?
 
     var canRecord: Bool {
-        modelState != .loading && modelState != .unloading
+        !isClearingModelStorage && modelState != .loading && modelState != .unloading
             && !isStartingRecording && (isRecording || recordingTask == nil)
     }
 
     var canChangeOutputLanguage: Bool {
-        modelState != .loading && modelState != .unloading
+        !isClearingModelStorage && modelState != .loading && modelState != .unloading
             && !isRecording && !isStartingRecording && recordingTask == nil
+    }
+
+    var canClearModelStorage: Bool { canChangeOutputLanguage }
+
+    func clearModelStorage() async throws {
+        guard canClearModelStorage else { return }
+        isClearingModelStorage = true
+        defer { isClearingModelStorage = false }
+        // No capture/inference/download is running. Release Core ML references
+        // before deleting files, and prevent model reloads until deletion ends.
+        await unloadModel()
+        try await Task.detached(priority: .utility) {
+            let cache = try RemoteModelCache.applicationCache()
+            try cache.removeAllDownloadedFiles()
+        }.value
+        downloadProgress = 0
+        downloadID = nil
+        logger.info("All app-managed downloaded models and tokenizers deleted")
+        // Keep the transcript and bundled Silero model. The next model load
+        // recreates the download directory and downloads the selected model.
     }
 
     func selectOutputLanguage(_ language: OutputLanguage) async {
@@ -129,7 +150,7 @@ final class LiveTranslationViewModel: ObservableObject {
     }
 
     func prepareModel(forceRetry: Bool = false) async {
-        guard modelState != .loading, modelState != .unloading,
+        guard !isClearingModelStorage, modelState != .loading, modelState != .unloading,
               recordingTask == nil, !isStartingRecording,
               forceRetry || modelState == .idle else { return }
 

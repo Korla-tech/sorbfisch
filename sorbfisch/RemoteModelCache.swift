@@ -24,6 +24,14 @@ nonisolated struct RemoteModelCache {
             .appendingPathComponent(variant, isDirectory: true)
     }
 
+    func removeAllDownloadedFiles() throws {
+        guard root.standardizedFileURL.lastPathComponent == "WhisperModels" else {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+        guard FileManager.default.fileExists(atPath: root.path) else { return }
+        try FileManager.default.removeItem(at: root)
+    }
+
     func completedModel(for variant: String) -> URL? {
         let folder = modelFolder(for: variant)
         guard FileManager.default.fileExists(atPath: marker(in: folder).path),

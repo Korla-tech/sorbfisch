@@ -12,6 +12,8 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @StateObject private var viewModel = LiveTranslationViewModel()
     @State private var isShowingLegalInformation = false
+    @State private var isConfirmingModelDeletion = false
+    @State private var modelStorageResultMessage = ""
     @State private var isExportingTranscript = false
     @State private var transcriptDocument = TranscriptDocument(text: "")
     @State private var transcriptFilename = "Sorbfisch"
@@ -358,6 +360,29 @@ struct ContentView: View {
                         .padding(.vertical, 4)
                 }
 
+                Section {
+                    Button(role: .destructive) {
+                        guard viewModel.canClearModelStorage, !isConfirmingModelDeletion else { return }
+                        modelStorageResultMessage = ""
+                        isConfirmingModelDeletion = true
+                    } label: {
+                        Label("Heruntergeladene Modelle löschen", systemImage: "trash")
+                    }
+                    .disabled(!viewModel.canClearModelStorage)
+
+                    if viewModel.isClearingModelStorage {
+                        ProgressView("Modellspeicher wird gelöscht …")
+                    } else if !modelStorageResultMessage.isEmpty {
+                        Text(modelStorageResultMessage)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text("Modellspeicher")
+                } footer: {
+                    Text("Löscht alle heruntergeladenen Modelle, Tokenizer und unvollständigen Downloads. Beim nächsten Laden ist wieder Internet nötig. Dein Transkript bleibt erhalten. Bitte beende zuerst die Aufnahme und warte, bis das Modell fertig geladen ist.")
+                }
+
             }
             .navigationTitle("Über Sorbfisch")
             .navigationBarTitleDisplayMode(.inline)
@@ -366,11 +391,38 @@ struct ContentView: View {
                     Button("Fertig") {
                         isShowingLegalInformation = false
                     }
+                    .disabled(viewModel.isClearingModelStorage)
                 }
             }
         }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
+        .interactiveDismissDisabled(viewModel.isClearingModelStorage)
+        .confirmationDialog(
+            "Alle heruntergeladenen Modelle löschen?",
+            isPresented: $isConfirmingModelDeletion,
+            titleVisibility: .visible
+        ) {
+            Button("Alle Modelle löschen", role: .destructive) {
+                // Close the confirmation before async model-state changes redraw
+                // the sheet. Report completion inline, not in a second dialog.
+                isConfirmingModelDeletion = false
+                guard viewModel.canClearModelStorage else { return }
+                Task {
+                    do {
+                        try await viewModel.clearModelStorage()
+                        modelStorageResultMessage = "Der Modellspeicher wurde gelöscht. Beim nächsten Laden wird das ausgewählte Modell erneut heruntergeladen."
+                    } catch {
+                        modelStorageResultMessage = "Der Modellspeicher konnte nicht vollständig gelöscht werden: \(error.localizedDescription)"
+                    }
+                }
+            }
+            Button("Abbrechen", role: .cancel) {
+                isConfirmingModelDeletion = false
+            }
+        } message: {
+            Text("Die heruntergeladenen Dateien werden dauerhaft entfernt. Dein Transkript und die mitgelieferten Dateien bleiben erhalten.")
+        }
     }
 
     private var recordingControlAccessibilityLabel: String {
