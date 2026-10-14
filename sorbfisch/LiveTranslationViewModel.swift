@@ -150,6 +150,11 @@ final class LiveTranslationViewModel: ObservableObject {
     }
 
     func prepareModel(forceRetry: Bool = false) async {
+        guard AppleIntelligenceDeviceSupport.isSupported else {
+            modelState = .failed
+            present(error: LiveTranslationError.unsupportedDevice)
+            return
+        }
         guard !isClearingModelStorage, modelState != .loading, modelState != .unloading,
               recordingTask == nil, !isStartingRecording,
               forceRetry || modelState == .idle else { return }
@@ -521,11 +526,14 @@ final class LiveTranslationViewModel: ObservableObject {
 }
 
 private enum LiveTranslationError: LocalizedError {
+    case unsupportedDevice
     case tokenizerUnavailable
     case microphonePermissionDenied
 
     var errorDescription: String? {
         switch self {
+        case .unsupportedDevice:
+            return "Sorbfisch benötigt ein Gerät, das Apple Intelligence unterstützt."
         case .tokenizerUnavailable:
             return "Der Tokenizer des Sprachmodells konnte nicht geladen werden."
         case .microphonePermissionDenied:
