@@ -246,14 +246,14 @@ final class LiveTranslationViewModel: ObservableObject {
                 throw LiveTranslationError.tokenizerUnavailable
             }
 
-            // Both fine-tuned models use transcription with a forced language.
+            // Both fine-tuned routes use transcribe; translation is learned by
+            // the translation model. Keep the existing custom-model token setup.
             let options = DecodingOptions(
                 verbose: false,
                 task: .transcribe,
-                language: outputLanguage == .german ? "de" : "cs",
+                language: "cs",
                 temperature: 0,
-                usePrefillPrompt: true,
-                detectLanguage: false,
+                usePrefillPrompt: false,
                 skipSpecialTokens: true,
                 wordTimestamps: false,
             )
