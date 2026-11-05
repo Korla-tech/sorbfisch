@@ -7,6 +7,11 @@ import WhisperKit
 
 @MainActor
 final class LiveTranslationViewModel: ObservableObject {
+    struct DisplaySegment {
+        let text: String
+        let isUncertain: Bool
+    }
+
     enum ModelState {
         case idle
         case loading
@@ -22,7 +27,8 @@ final class LiveTranslationViewModel: ObservableObject {
     @Published private(set) var downloadProgress: Double = 0
     @Published private(set) var isClearingModelStorage = false
     @Published private(set) var isRecording = false
-    @Published private(set) var translatedText = ""
+    @Published private(set) var displaySegments: [DisplaySegment] = []
+    var translatedText: String { displaySegments.map(\.text).joined(separator: " ") }
     @Published private(set) var confidence: Double?
     @Published private(set) var audioLevels: [Float] = []
     @Published private(set) var didCopy = false
@@ -80,7 +86,7 @@ final class LiveTranslationViewModel: ObservableObject {
     func selectOutputLanguage(_ language: OutputLanguage) async {
         guard canChangeOutputLanguage, outputLanguage != language else { return }
         outputLanguage = language
-        translatedText = ""
+        displaySegments = []
         confidence = nil
         audioLevels = []
         didCopy = false
@@ -337,7 +343,7 @@ final class LiveTranslationViewModel: ObservableObject {
                 microphone.stop()
                 return
             }
-            translatedText = ""
+            displaySegments = []
             confidence = nil
             audioLevels = []
             submittedSampleCount = 0
@@ -416,6 +422,9 @@ final class LiveTranslationViewModel: ObservableObject {
 
                 let startedAt = ContinuousClock.now
                 let results = try await kit.transcribe(audioArray: utterance.samples, decodeOptions: options)
+                for r in results[0].segments {
+                    print(r)
+                }
                 let elapsed = startedAt.duration(to: .now)
                 let wallSeconds = Double(elapsed.components.seconds)
                     + Double(elapsed.components.attoseconds) / 1e18
@@ -423,11 +432,17 @@ final class LiveTranslationViewModel: ObservableObject {
                 guard sessionID == id else { return }
 
                 let segments = results.flatMap(\.segments)
-                let text = Self.removingSpecialTokens(from: results.map(\.text).joined(separator: " "))
-                if !text.isEmpty {
-                    translatedText = [translatedText, text].filter { !$0.isEmpty }.joined(separator: " ")
+                for segment in segments {
+                    let text = Self.removingSpecialTokens(from: segment.text)
+                    guard !text.isEmpty else { continue }
+                    let score = exp(Double(segment.avgLogprob))
+                    if !score.isFinite || score < 0.5 {
+                        displaySegments.append(DisplaySegment(text: "unverständlich", isUncertain: false))
+                    } else {
+                        displaySegments.append(DisplaySegment(text: text, isUncertain: score < 0.75))
+                    }
                 }
-                confidence = text.isEmpty ? 0 : Self.confidence(for: segments)
+                confidence = Self.confidence(for: segments)
                 submittedSampleCount += utterance.samples.count
                 completedDecodeCount += 1
                 logDecodeMetrics(utterance, results: results, wallSeconds: wallSeconds)

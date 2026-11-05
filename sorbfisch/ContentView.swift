@@ -196,7 +196,11 @@ struct ContentView: View {
                     }
                     .frame(maxWidth: .infinity, minHeight: 190)
                 } else {
-                    Text(viewModel.translatedText)
+                    viewModel.displaySegments.enumerated().reduce(Text("")) { result, item in
+                        let segment = item.element
+                        let text = Text((item.offset == 0 ? "" : " ") + segment.text)
+                        return result + (segment.isUncertain ? text.underline(true, color: .orange) : text)
+                    }
                         .font(.system(.title3, design: .rounded, weight: .regular))
                         .lineSpacing(6)
                         .textSelection(.enabled)
