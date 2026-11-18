@@ -20,13 +20,43 @@ final class LiveTranslationViewModel: ObservableObject {
         case failed
     }
 
+    enum RecordingActivity {
+        case idle
+        case listening
+        case speech
+        case processing
+
+        var title: String {
+            switch self {
+            case .idle: "Bereit"
+            case .listening: "Hört zu …"
+            case .speech: "Sprache erkannt"
+            case .processing: "Wird verarbeitet …"
+            }
+        }
+    }
+
     @Published private(set) var modelState: ModelState = .idle
     @Published private(set) var outputLanguage: OutputLanguage = .german
     @Published private(set) var isPrewarming = false
     @Published private(set) var isDownloading = false
     @Published private(set) var downloadProgress: Double = 0
     @Published private(set) var isClearingModelStorage = false
-    @Published private(set) var isRecording = false
+    @Published private(set) var isRecording = false {
+        didSet {
+            // Keep the live transcript visible during capture, then restore auto-lock
+            // on every stop path, including cancellation and recording errors.
+            UIApplication.shared.isIdleTimerDisabled = isRecording
+            if !isRecording {
+                speechReleaseTask?.cancel()
+                speechReleaseTask = nil
+                recordingActivity = .idle
+            }
+        }
+    }
+    @Published private(set) var recordingActivity: RecordingActivity = .idle
+    @Published private(set) var isDebugRecordingEnabled = false
+    @Published private(set) var isManagingDebugRecordings = false
     @Published private(set) var displaySegments: [DisplaySegment] = []
     var translatedText: String { displaySegments.map(\.text).joined(separator: " ") }
     @Published private(set) var confidence: Double?
@@ -40,6 +70,8 @@ final class LiveTranslationViewModel: ObservableObject {
     private var vad: SileroChunkVAD?
     private var recordingTask: Task<Void, Never>?
     private var meteringTask: Task<Void, Never>?
+    private var speechReleaseTask: Task<Void, Never>?
+    private let debugRecordings = DebugRecordingStore()
     private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "de.serbskilud.sorbfisch",
         category: "WhisperKit"
@@ -54,16 +86,39 @@ final class LiveTranslationViewModel: ObservableObject {
     private var downloadID: UUID?
 
     var canRecord: Bool {
-        !isClearingModelStorage && modelState != .loading && modelState != .unloading
+        !isClearingModelStorage && !isManagingDebugRecordings && modelState != .loading && modelState != .unloading
             && !isStartingRecording && (isRecording || recordingTask == nil)
     }
 
     var canChangeOutputLanguage: Bool {
-        !isClearingModelStorage && modelState != .loading && modelState != .unloading
+        !isClearingModelStorage && !isManagingDebugRecordings && modelState != .loading && modelState != .unloading
             && !isRecording && !isStartingRecording && recordingTask == nil
     }
 
     var canClearModelStorage: Bool { canChangeOutputLanguage }
+
+    var canManageDebugRecordings: Bool {
+        canChangeOutputLanguage && !isManagingDebugRecordings
+    }
+
+    func setDebugRecordingEnabled(_ enabled: Bool) {
+        guard canManageDebugRecordings else { return }
+        isDebugRecordingEnabled = enabled
+    }
+
+    func exportDebugRecordings() async throws -> URL {
+        guard canManageDebugRecordings else { throw CancellationError() }
+        isManagingDebugRecordings = true
+        defer { isManagingDebugRecordings = false }
+        return try await debugRecordings.exportArchive()
+    }
+
+    func deleteDebugRecordings() async throws {
+        guard canManageDebugRecordings else { throw CancellationError() }
+        isManagingDebugRecordings = true
+        defer { isManagingDebugRecordings = false }
+        try await debugRecordings.deleteRecordings()
+    }
 
     func clearModelStorage() async throws {
         guard canClearModelStorage else { return }
@@ -350,6 +405,7 @@ final class LiveTranslationViewModel: ObservableObject {
             completedDecodeCount = 0
             recordingStartedAt = Date()
             isRecording = true
+            recordingActivity = .listening
             meteringTask = Task { [weak self] in
                 for await level in streams.levels {
                     guard !Task.isCancelled, let self,
@@ -398,10 +454,34 @@ final class LiveTranslationViewModel: ObservableObject {
         modelState = .idle
     }
 
+    private func updateSpeechActivity(_ isSpeech: Bool, session id: UUID) {
+        if isSpeech {
+            speechReleaseTask?.cancel()
+            speechReleaseTask = nil
+            recordingActivity = .speech
+        } else if recordingActivity == .speech, speechReleaseTask == nil {
+            // Hold the speech indication across brief pauses without delaying
+            // the actual VAD decisions or utterance boundaries.
+            speechReleaseTask = Task { [weak self] in
+                do {
+                    try await Task.sleep(for: .milliseconds(500))
+                } catch { return }
+                guard let self, self.sessionID == id, self.isRecording,
+                      self.recordingActivity == .speech else { return }
+                self.recordingActivity = .listening
+                self.speechReleaseTask = nil
+            }
+        }
+    }
+
     private func runSequence(
         _ stream: AsyncThrowingStream<[Float], Error>,
         vad: SileroChunkVAD, kit: WhisperKit, options: DecodingOptions, session id: UUID
     ) async throws {
+        let debugSession = isDebugRecordingEnabled
+            ? try await debugRecordings.startSession(id: id, outputLanguage: outputLanguage.rawValue, model: outputLanguage.modelResource)
+            : nil
+        var decodeIndex = 0
         var buffer = SpeechSequenceBuffer()
         var frames = VADAudioFrames()
         for try await chunk in stream {
@@ -413,6 +493,7 @@ final class LiveTranslationViewModel: ObservableObject {
                 let isSpeech = try await vad.isSpeech(frame)
                 try Task.checkCancellation()
                 guard sessionID == id else { return }
+                updateSpeechActivity(isSpeech, session: id)
                 let previousSize = buffer.samples.count
                 let utterance = buffer.append(frame, isSpeech: isSpeech)
                 if utterance == nil, buffer.samples.isEmpty, previousSize > 0 {
@@ -420,16 +501,40 @@ final class LiveTranslationViewModel: ObservableObject {
                 }
                 guard let utterance else { continue }
 
+                speechReleaseTask?.cancel()
+                speechReleaseTask = nil
+                recordingActivity = .processing
+                decodeIndex += 1
+                let debugCapture: DebugDecodeCapture?
+                if let debugSession {
+                    debugCapture = try await debugRecordings.beginDecode(session: debugSession, index: decodeIndex, utterance: utterance)
+                } else {
+                    debugCapture = nil
+                }
                 let startedAt = ContinuousClock.now
-                let results = try await kit.transcribe(audioArray: utterance.samples, decodeOptions: options)
-                for r in results[0].segments {
-                    print(r)
+                let results: [TranscriptionResult]
+                do {
+                    try Task.checkCancellation()
+                    results = try await kit.transcribe(audioArray: utterance.samples, decodeOptions: options)
+                } catch {
+                    if let debugCapture {
+                        try await debugRecordings.failDecode(debugCapture, error: error)
+                    }
+                    throw error
                 }
                 let elapsed = startedAt.duration(to: .now)
                 let wallSeconds = Double(elapsed.components.seconds)
                     + Double(elapsed.components.attoseconds) / 1e18
+                if let debugCapture {
+                    try await debugRecordings.completeDecode(
+                        debugCapture, samples: utterance.samples,
+                        results: results.map { DebugDecodeResult(text: $0.text, language: $0.language, segments: $0.segments) },
+                        seconds: wallSeconds
+                    )
+                }
                 try Task.checkCancellation()
                 guard sessionID == id else { return }
+                recordingActivity = .listening
 
                 let segments = results.flatMap(\.segments)
                 for segment in segments {

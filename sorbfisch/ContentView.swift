@@ -19,6 +19,12 @@ struct ContentView: View {
     @State private var transcriptFilename = "Sorbfisch"
     @State private var isShowingExportError = false
     @State private var exportErrorMessage = ""
+    @State private var developerTapCount = 0
+    @State private var isShowingDeveloperOptions = false
+    @State private var isExportingDebugRecordings = false
+    @State private var debugArchiveDocument = DebugArchiveDocument()
+    @State private var isConfirmingDebugDeletion = false
+    @State private var debugStorageMessage = ""
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -173,40 +179,50 @@ struct ContentView: View {
 
                 if let confidence = viewModel.confidence {
                     confidenceBadge(confidence)
+                        .fixedSize()
                 }
             }
 
-            Group {
-                if viewModel.translatedText.isEmpty {
-                    VStack(spacing: 12) {
-                        Image(systemName: viewModel.isRecording ? "waveform" : "quote.bubble")
-                            .font(.system(size: 34, weight: .light))
-                            .foregroundStyle(.secondary)
-                            .symbolEffect(.variableColor.iterative, isActive: viewModel.isRecording)
+            ScrollViewReader { scrollProxy in
+                ScrollView(.vertical) {
+                    if viewModel.translatedText.isEmpty {
+                        VStack(spacing: 12) {
+                            Image(systemName: viewModel.isRecording ? "waveform" : "quote.bubble")
+                                .font(.system(size: 34, weight: .light))
+                                .foregroundStyle(.secondary)
+                                .symbolEffect(.variableColor.iterative, isActive: viewModel.isRecording)
 
-                        Text(viewModel.emptyStateMessage)
-                            .font(.body)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
+                            Text(viewModel.emptyStateMessage)
+                                .font(.body)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
 
-                        if viewModel.modelState == .loading, !viewModel.isDownloading {
-                            ProgressView()
-                                .accessibilityLabel(viewModel.controlHint)
+                            if viewModel.modelState == .loading, !viewModel.isDownloading {
+                                ProgressView()
+                                    .accessibilityLabel(viewModel.controlHint)
+                            }
                         }
+                        .frame(maxWidth: .infinity, minHeight: 190)
+                    } else {
+                        viewModel.displaySegments.enumerated().reduce(Text("")) { result, item in
+                            let segment = item.element
+                            let text = Text((item.offset == 0 ? "" : " ") + segment.text)
+                            return result + (segment.isUncertain ? text.underline(true, color: .orange) : text)
+                        }
+                            .font(.system(.title3, design: .rounded, weight: .regular))
+                            .lineSpacing(6)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .topLeading)
+                            .id("transcript")
                     }
-                    .frame(maxWidth: .infinity, minHeight: 190)
-                } else {
-                    viewModel.displaySegments.enumerated().reduce(Text("")) { result, item in
-                        let segment = item.element
-                        let text = Text((item.offset == 0 ? "" : " ") + segment.text)
-                        return result + (segment.isUncertain ? text.underline(true, color: .orange) : text)
-                    }
-                        .font(.system(.title3, design: .rounded, weight: .regular))
-                        .lineSpacing(6)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, minHeight: 190, alignment: .topLeading)
+                }
+                .onChange(of: viewModel.displaySegments.count) { oldCount, newCount in
+                    guard newCount > oldCount else { return }
+                    scrollProxy.scrollTo("transcript", anchor: .bottom)
                 }
             }
+            .frame(height: 190)
 
             if viewModel.isDownloading {
                 VStack(alignment: .leading, spacing: 8) {
@@ -298,9 +314,16 @@ struct ContentView: View {
 
     private var recordingControls: some View {
         VStack(spacing: 18) {
-            WaveformView(levels: viewModel.audioLevels, isActive: viewModel.isRecording)
-                .frame(height: 44)
-                .padding(.horizontal, 28)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) {
+                    recordingWaveform
+                    recordingActivityIndicator
+                }
+                VStack(spacing: 8) {
+                    recordingWaveform
+                    recordingActivityIndicator
+                }
+            }
 
             Button {
                 Task { await viewModel.toggleRecording() }
@@ -334,10 +357,47 @@ struct ContentView: View {
         .padding(.top, 2)
     }
 
+    private var recordingWaveform: some View {
+        WaveformView(levels: viewModel.audioLevels, isActive: viewModel.isRecording)
+            .frame(height: 44)
+    }
+
+    private var recordingActivityIndicator: some View {
+        HStack(spacing: 6) {
+            switch viewModel.recordingActivity {
+            case .idle:
+                Image(systemName: "mic.fill")
+                    .foregroundStyle(.secondary)
+            case .listening:
+                Image(systemName: "mic.fill")
+                    .foregroundStyle(.blue)
+            case .speech:
+                Image(systemName: "waveform")
+                    .foregroundStyle(.green)
+            case .processing:
+                ProgressView()
+                    .controlSize(.mini)
+            }
+            Text(viewModel.recordingActivity.title)
+                .foregroundStyle(.secondary)
+        }
+        .font(.caption.weight(.medium))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(.quaternary, in: Capsule())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(viewModel.recordingActivity.title)
+    }
+
     private var privacyNote: some View {
-        Label("Audio und Text bleiben auf diesem Gerät.", systemImage: "lock.fill")
+        Label(
+            viewModel.isDebugRecordingEnabled
+                ? "Debug-Modus aktiv: Audio und JSON werden gespeichert."
+                : "Audio und Text bleiben auf diesem Gerät.",
+            systemImage: viewModel.isDebugRecordingEnabled ? "ladybug.fill" : "lock.fill"
+        )
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(viewModel.isDebugRecordingEnabled ? Color.orange : Color.secondary)
             .multilineTextAlignment(.center)
             .frame(maxWidth: .infinity)
     }
@@ -357,6 +417,22 @@ struct ContentView: View {
                 Section("Entwicklung") {
                     Text("Die App wurde im Auftrag der Stiftung für das sorbische Volk von Karl Baier entwickelt.")
                         .padding(.vertical, 4)
+
+                    Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "–") (\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "–"))")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            developerTapCount += 1
+                            if developerTapCount >= 7 { isShowingDeveloperOptions = true }
+                        }
+                        .accessibilityAddTraits(.isButton)
+                        .accessibilityHint("Siebenmal tippen, um Entwickleroptionen einzublenden.")
+                }
+
+                if isShowingDeveloperOptions {
+                    developerDebuggingSection
                 }
 
                 Section("Danksagung") {
@@ -402,6 +478,34 @@ struct ContentView: View {
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
         .interactiveDismissDisabled(viewModel.isClearingModelStorage)
+        .fileExporter(
+            isPresented: $isExportingDebugRecordings,
+            document: debugArchiveDocument,
+            contentType: .zip,
+            defaultFilename: "Sorbfisch-Debug"
+        ) { result in
+            if case .failure(let error) = result {
+                let cocoaError = error as NSError
+                guard cocoaError.domain != NSCocoaErrorDomain
+                    || cocoaError.code != CocoaError.Code.userCancelled.rawValue else { return }
+                debugStorageMessage = "Export fehlgeschlagen: \(error.localizedDescription)"
+            }
+        }
+        .confirmationDialog("Debug-Aufnahmen löschen?", isPresented: $isConfirmingDebugDeletion, titleVisibility: .visible) {
+            Button("Alle Debug-Aufnahmen löschen", role: .destructive) {
+                Task {
+                    do {
+                        try await viewModel.deleteDebugRecordings()
+                        debugStorageMessage = "Debug-Aufnahmen gelöscht."
+                    } catch {
+                        debugStorageMessage = error.localizedDescription
+                    }
+                }
+            }
+            Button("Abbrechen", role: .cancel) { }
+        } message: {
+            Text("Alle lokal gespeicherten Debug-Audiodateien und JSON-Protokolle werden gelöscht. Bereits exportierte Kopien bleiben erhalten.")
+        }
         .confirmationDialog(
             "Alle heruntergeladenen Modelle löschen?",
             isPresented: $isConfirmingModelDeletion,
@@ -426,6 +530,49 @@ struct ContentView: View {
             }
         } message: {
             Text("Die heruntergeladenen Dateien werden dauerhaft entfernt. Dein Transkript und die mitgelieferten Dateien bleiben erhalten.")
+        }
+    }
+
+    private var developerDebuggingSection: some View {
+        Section {
+            Toggle("Debug-Aufnahmen speichern", isOn: Binding(
+                get: { viewModel.isDebugRecordingEnabled },
+                set: { viewModel.setDebugRecordingEnabled($0) }
+            ))
+            .disabled(!viewModel.canManageDebugRecordings)
+
+            Button {
+                Task {
+                    debugStorageMessage = ""
+                    do {
+                        let url = try await viewModel.exportDebugRecordings()
+                        debugArchiveDocument = DebugArchiveDocument(url: url)
+                        isExportingDebugRecordings = true
+                    } catch {
+                        debugStorageMessage = "Export nicht möglich: \(error.localizedDescription)"
+                    }
+                }
+            } label: {
+                Label("Debug-Aufnahmen als ZIP exportieren", systemImage: "square.and.arrow.up")
+            }
+            .disabled(!viewModel.canManageDebugRecordings)
+
+            Button("Debug-Aufnahmen löschen", role: .destructive) {
+                isConfirmingDebugDeletion = true
+            }
+            .disabled(!viewModel.canManageDebugRecordings)
+
+            if viewModel.isManagingDebugRecordings {
+                ProgressView()
+            }
+            if !debugStorageMessage.isEmpty {
+                Text(debugStorageMessage)
+                    .font(.footnote)
+            }
+        } header: {
+            Text("Entwickleroptionen · Debugging")
+        } footer: {
+            Text("Speichert ab der nächsten Aufnahme die dekodierten Audiodaten und Segment-Ausschnitte als WAV sowie Texte, Konfidenzen und Tokens als JSON auf diesem Gerät. Nach Aufnahmeende als ZIP in Dateien oder auf dem Mac sichern. Beim App-Neustart ist der Modus wieder aus. Änderungen und Export sind nur bei gestoppter Aufnahme möglich.")
         }
     }
 
@@ -478,6 +625,26 @@ nonisolated private struct TranscriptDocument: FileDocument {
 
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
         FileWrapper(regularFileWithContents: Data(text.utf8))
+    }
+}
+
+nonisolated private struct DebugArchiveDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.zip] }
+    var url: URL?
+    private var importedData: Data?
+
+    init(url: URL? = nil) {
+        self.url = url
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        importedData = configuration.file.regularFileContents
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        if let url { return try FileWrapper(url: url, options: .immediate) }
+        guard let importedData else { throw CocoaError(.fileReadNoSuchFile) }
+        return FileWrapper(regularFileWithContents: importedData)
     }
 }
 
